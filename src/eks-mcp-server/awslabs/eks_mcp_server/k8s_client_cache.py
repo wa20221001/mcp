@@ -15,9 +15,14 @@
 """Kubernetes client cache for the EKS MCP Server."""
 
 import base64
+import os
+import yaml
+from pathlib import Path
+from typing import Optional
 from awslabs.eks_mcp_server.aws_helper import AwsHelper
 from awslabs.eks_mcp_server.k8s_apis import K8sApis
 from cachetools import TTLCache
+from loguru import logger
 
 
 # Presigned url timeout in seconds
@@ -57,6 +62,9 @@ class K8sClientCache:
 
         # Flag to track if STS event handlers have been registered
         self._sts_event_handlers_registered = False
+        
+        # Active Kubernetes context (for kubeconfig-based contexts)
+        self._active_context: Optional[str] = None
 
         self._initialized = True
 
@@ -157,3 +165,70 @@ class K8sClientCache:
                 raise Exception(f'Failed to get cluster credentials: {str(e)}')
 
         return self._client_cache[cluster_name]
+    
+    def set_active_context(self, context_name: str) -> None:
+        """Set the active Kubernetes context.
+        
+        This allows dynamic switching between Kubernetes contexts at runtime.
+        Setting the context clears the client cache to ensure clients are
+        recreated with the new context.
+        
+        Args:
+            context_name: Name of the Kubernetes context to set
+        """
+        self._active_context = context_name
+        self._client_cache.clear()
+        logger.info(f'Active Kubernetes context set to: {context_name}')
+    
+    def get_active_context(self) -> Optional[str]:
+        """Get the currently active Kubernetes context.
+        
+        Returns:
+            Name of the active context, or None if not set
+        """
+        return self._active_context
+    
+    def get_cluster_from_context(self, context_name: Optional[str] = None) -> Optional[str]:
+        """Get the cluster name associated with a Kubernetes context.
+        
+        This reads the kubeconfig file to map a context to its cluster name.
+        
+        Args:
+            context_name: Name of the context, or None to use the active context
+            
+        Returns:
+            Cluster name associated with the context, or None if not found
+        """
+        if context_name is None:
+            context_name = self._active_context
+        
+        if context_name is None:
+            return None
+        
+        try:
+            kubeconfig_path = os.environ.get('KUBECONFIG', str(Path.home() / '.kube' / 'config'))
+            
+            if not Path(kubeconfig_path).exists():
+                logger.warning(f'Kubeconfig file not found at: {kubeconfig_path}')
+                return None
+            
+            with open(kubeconfig_path, 'r') as f:
+                kubeconfig = yaml.safe_load(f)
+            
+            if not kubeconfig or 'contexts' not in kubeconfig:
+                return None
+            
+            # Find the context
+            for context in kubeconfig.get('contexts', []):
+                if context.get('name') == context_name:
+                    cluster_name = context.get('context', {}).get('cluster')
+                    if cluster_name:
+                        logger.info(f'Resolved context {context_name} to cluster: {cluster_name}')
+                        return cluster_name
+            
+            logger.warning(f'Context {context_name} not found in kubeconfig')
+            return None
+            
+        except Exception as e:
+            logger.error(f'Failed to read kubeconfig: {str(e)}')
+            return None

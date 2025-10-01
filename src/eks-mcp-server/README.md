@@ -262,7 +262,7 @@ Sets the logging level verbosity for the server.
 
 #### `AWS_PROFILE` (optional)
 
-Specifies the AWS profile to use for authentication.
+Specifies the AWS profile to use for authentication. **Note**: You can also dynamically switch profiles at runtime using the `set_aws_profile` tool without restarting the server.
 
 * Default: None (If not set, uses default AWS credentials).
 * Example: `"AWS_PROFILE": "my-profile"`
@@ -285,6 +285,72 @@ Configures proxy settings for HTTP and HTTPS connections. These environment vari
 ## Tools
 
 The following tools are provided by the EKS MCP server for managing Amazon EKS clusters and Kubernetes resources. Each tool performs a specific action that can be invoked to automate common tasks in your EKS clusters and Kubernetes workloads.
+
+### Multi-Profile and Multi-Context Management
+
+The EKS MCP server now supports dynamic AWS profile and Kubernetes context switching, enabling you to manage multiple EKS clusters across different AWS accounts without restarting the server. This is particularly useful for organizations managing large numbers of clusters (100+) across multiple AWS accounts.
+
+#### `list_aws_profiles`
+
+Lists all available AWS profiles from `~/.aws/config` and `~/.aws/credentials`.
+
+Features:
+
+* Reads AWS configuration files and returns all available profile names
+* Helps you see which profiles can be activated with `set_aws_profile`
+
+Returns: List of available AWS profile names
+
+#### `set_aws_profile`
+
+Sets the active AWS profile for all subsequent AWS operations.
+
+Features:
+
+* Dynamically switches AWS profiles without server restart
+* Clears cached AWS clients to ensure new profile is used
+* Validates that the profile exists before switching
+
+Parameters:
+
+* profile_name (required): Name of the AWS profile to activate
+
+#### `get_aws_profile`
+
+Gets the currently active AWS profile.
+
+Returns: Name of the current AWS profile or information about default credentials
+
+#### `list_k8s_contexts`
+
+Lists all available Kubernetes contexts from `~/.kube/config`.
+
+Features:
+
+* Reads kubeconfig file and returns all available context names
+* Helps you see which contexts can be activated with `set_k8s_context`
+
+Returns: List of available Kubernetes context names
+
+#### `set_k8s_context`
+
+Sets the active Kubernetes context for all subsequent Kubernetes operations.
+
+Features:
+
+* Dynamically switches Kubernetes contexts without server restart
+* Clears cached Kubernetes clients to ensure new context is used
+* Validates that the context exists before switching
+
+Parameters:
+
+* context_name (required): Name of the Kubernetes context to activate
+
+#### `get_k8s_context`
+
+Gets the currently active Kubernetes context.
+
+Returns: Name of the current Kubernetes context
 
 ### EKS Cluster Management
 

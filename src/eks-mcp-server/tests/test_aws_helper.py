@@ -260,3 +260,134 @@ class TestAwsHelper:
 
         # Verify that the same client instance was returned both times
         assert client1 is client2
+
+    def test_set_active_profile(self):
+        """Test that set_active_profile sets the profile and clears cache."""
+        # Add some items to the cache
+        AwsHelper._client_cache['s3'] = MagicMock()
+        AwsHelper._client_cache['ec2'] = MagicMock()
+        
+        # Set active profile
+        AwsHelper.set_active_profile('test-profile')
+        
+        # Verify profile was set
+        assert AwsHelper._active_profile == 'test-profile'
+        
+        # Verify cache was cleared
+        assert len(AwsHelper._client_cache) == 0
+
+    def test_set_active_profile_to_none(self):
+        """Test that set_active_profile can be set to None."""
+        # Set active profile to a value first
+        AwsHelper._active_profile = 'test-profile'
+        
+        # Set to None
+        AwsHelper.set_active_profile(None)
+        
+        # Verify profile was set to None
+        assert AwsHelper._active_profile is None
+
+    def test_get_active_profile_when_set(self):
+        """Test that get_active_profile returns the active profile when set."""
+        # Set active profile
+        AwsHelper._active_profile = 'test-profile'
+        
+        # Get active profile
+        profile = AwsHelper.get_active_profile()
+        
+        # Verify correct profile was returned
+        assert profile == 'test-profile'
+
+    @patch.dict(os.environ, {'AWS_PROFILE': 'env-profile'})
+    def test_get_active_profile_falls_back_to_env(self):
+        """Test that get_active_profile falls back to environment variable when not set."""
+        # Ensure active profile is None
+        AwsHelper._active_profile = None
+        
+        # Get active profile
+        profile = AwsHelper.get_active_profile()
+        
+        # Verify env profile was returned
+        assert profile == 'env-profile'
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_get_active_profile_returns_none_when_not_set(self):
+        """Test that get_active_profile returns None when neither active profile nor env is set."""
+        # Ensure active profile is None
+        AwsHelper._active_profile = None
+        
+        # Get active profile
+        profile = AwsHelper.get_active_profile()
+        
+        # Verify None was returned
+        assert profile is None
+
+    @patch('boto3.Session')
+    def test_active_profile_overrides_env_profile(self, mock_boto3_session):
+        """Test that active profile overrides environment variable."""
+        # Create mock session
+        mock_session = MagicMock()
+        mock_boto3_session.return_value = mock_session
+        
+        # Set environment profile
+        with patch.dict(os.environ, {'AWS_PROFILE': 'env-profile'}):
+            # Set active profile to override
+            AwsHelper.set_active_profile('active-profile')
+            
+            # Create client
+            AwsHelper.create_boto3_client('s3')
+            
+            # Verify Session was created with active profile, not env profile
+            mock_boto3_session.assert_called_once_with(profile_name='active-profile')
+
+    @patch('boto3.Session')
+    def test_profile_switching_clears_cache(self, mock_boto3_session):
+        """Test that switching profiles causes clients to be recreated."""
+        # Create mock sessions and clients
+        mock_session1 = MagicMock()
+        mock_client1 = MagicMock()
+        mock_session1.client.return_value = mock_client1
+        
+        mock_session2 = MagicMock()
+        mock_client2 = MagicMock()
+        mock_session2.client.return_value = mock_client2
+        
+        mock_boto3_session.side_effect = [mock_session1, mock_session2]
+        
+        # Create client with first profile
+        AwsHelper.set_active_profile('profile1')
+        with patch.object(AwsHelper, 'get_aws_region', return_value=None):
+            client1 = AwsHelper.create_boto3_client('s3')
+        
+        # Switch profile
+        AwsHelper.set_active_profile('profile2')
+        
+        # Create client again
+        with patch.object(AwsHelper, 'get_aws_region', return_value=None):
+            client2 = AwsHelper.create_boto3_client('s3')
+        
+        # Verify both sessions were created
+        assert mock_boto3_session.call_count == 2
+        
+        # Verify different clients were returned
+        assert client1 is not client2
+
+    @patch('boto3.Session')
+    def test_aws_sso_profile_support(self, mock_boto3_session):
+        """Test that AWS SSO profiles work correctly."""
+        # Create mock session
+        mock_session = MagicMock()
+        mock_boto3_session.return_value = mock_session
+        
+        # Set an SSO profile
+        AwsHelper.set_active_profile('my-sso-profile')
+        
+        # Create client
+        with patch.object(AwsHelper, 'get_aws_region', return_value='us-east-1'):
+            AwsHelper.create_boto3_client('s3')
+        
+        # Verify Session was created with SSO profile
+        mock_boto3_session.assert_called_once_with(profile_name='my-sso-profile')
+        
+        # Verify client was created with region
+        mock_session.client.assert_called_once_with('s3', region_name='us-east-1', config=ANY)

@@ -37,6 +37,9 @@ class AwsHelper:
 
     # Client cache with AWS service name as key
     _client_cache: Dict[str, Any] = {}
+    
+    # Active profile (overrides environment variable)
+    _active_profile: Optional[str] = None
 
     @staticmethod
     def get_aws_region() -> Optional[str]:
@@ -47,6 +50,33 @@ class AwsHelper:
     def get_aws_profile() -> Optional[str]:
         """Get the AWS profile from the environment if set."""
         return os.environ.get('AWS_PROFILE')
+    
+    @classmethod
+    def set_active_profile(cls, profile_name: Optional[str]) -> None:
+        """Set the active AWS profile and clear the client cache.
+        
+        This allows dynamic switching between AWS profiles at runtime.
+        Setting the profile clears all cached clients to ensure they
+        are recreated with the new profile.
+        
+        Args:
+            profile_name: Name of the AWS profile to set, or None to use default
+        """
+        cls._active_profile = profile_name
+        cls._client_cache.clear()
+        logger.info(f'Active AWS profile set to: {profile_name}')
+    
+    @classmethod
+    def get_active_profile(cls) -> Optional[str]:
+        """Get the currently active AWS profile.
+        
+        Returns the profile set via set_active_profile, or falls back to
+        the AWS_PROFILE environment variable.
+        
+        Returns:
+            Name of the active AWS profile, or None if using default credentials
+        """
+        return cls._active_profile if cls._active_profile is not None else cls.get_aws_profile()
 
     @classmethod
     def create_boto3_client(cls, service_name: str, region_name: Optional[str] = None) -> Any:
@@ -72,8 +102,8 @@ class AwsHelper:
                 region_name if region_name is not None else cls.get_aws_region()
             )
 
-            # Get profile from environment if set
-            profile = cls.get_aws_profile()
+            # Get profile - use active profile if set, otherwise use environment variable
+            profile = cls.get_active_profile()
 
             # Use service name as the cache key
             cache_key = service_name
