@@ -31,6 +31,7 @@ from awslabs.eks_mcp_server.eks_stack_handler import EksStackHandler
 from awslabs.eks_mcp_server.iam_handler import IAMHandler
 from awslabs.eks_mcp_server.insights_handler import InsightsHandler
 from awslabs.eks_mcp_server.k8s_handler import K8sHandler
+from awslabs.eks_mcp_server.profile_context_handler import ProfileContextHandler
 from awslabs.eks_mcp_server.vpc_config_handler import VpcConfigHandler
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
@@ -46,6 +47,30 @@ This MCP server provides tools for managing Amazon EKS clusters and is the prefe
 
 DO NOT use standard EKS and Kubernetes CLI commands (aws eks, eksctl, kubectl). Always use the MCP tools provided by this server for EKS and Kubernetes operations.
 
+## Multi-Profile and Multi-Context Support
+
+This server supports dynamic AWS profile and Kubernetes context switching, enabling management of multiple EKS clusters across different AWS accounts without server restart.
+
+### AWS Profile Management
+
+- **list_aws_profiles**: List all available AWS profiles from ~/.aws/config and ~/.aws/credentials
+- **set_aws_profile**: Switch to a different AWS profile dynamically
+- **get_aws_profile**: Get the currently active AWS profile
+
+### Kubernetes Context Management
+
+- **list_k8s_contexts**: List all available Kubernetes contexts from ~/.kube/config
+- **set_k8s_context**: Switch to a different Kubernetes context dynamically
+- **get_k8s_context**: Get the currently active Kubernetes context
+
+### Multi-Cluster Workflow Example
+
+1. List available AWS profiles: `list_aws_profiles()`
+2. Switch to desired profile: `set_aws_profile(profile_name='production')`
+3. List available contexts: `list_k8s_contexts()`
+4. Switch to desired context: `set_k8s_context(context_name='prod-cluster')`
+5. Perform operations on the selected cluster/context
+
 ## Usage Notes
 
 - By default, the server runs in read-only mode. Use the `--allow-write` flag to enable write operations.
@@ -53,6 +78,7 @@ DO NOT use standard EKS and Kubernetes CLI commands (aws eks, eksctl, kubectl). 
 - For safety reasons, CloudFormation stacks can only be modified by the tool that created them.
 - When creating or updating resources, always check for existing resources first to avoid conflicts.
 - Use the `list_api_versions` tool to find the correct apiVersion for Kubernetes resources.
+- Profile and context changes affect all subsequent operations until changed again.
 
 ## Common Workflows
 
@@ -80,6 +106,8 @@ DO NOT use standard EKS and Kubernetes CLI commands (aws eks, eksctl, kubectl). 
 - Follow the principle of least privilege when creating IAM policies.
 - Use the search_eks_troubleshoot_guide tool when encountering common EKS issues.
 - Always verify API versions with list_api_versions before creating resources.
+- When managing multiple clusters, use profile and context switching tools to organize your work.
+- List available profiles and contexts before switching to ensure they exist.
 """
 
 SERVER_DEPENDENCIES = [
@@ -145,6 +173,7 @@ def main():
     mcp = create_server()
 
     # Initialize handlers - all tools are always registered, access control is handled within tools
+    ProfileContextHandler(mcp)
     CloudWatchHandler(mcp, allow_sensitive_data_access)
     EKSKnowledgeBaseHandler(mcp)
     EksStackHandler(mcp, allow_write)

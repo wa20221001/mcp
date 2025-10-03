@@ -414,3 +414,227 @@ class TestK8sClientCache:
 
             # Verify that describe_cluster was called with the correct parameters
             mock_eks_client.describe_cluster.assert_called_once_with(name='test-cluster')
+
+    def test_set_active_context(self):
+        """Test set_active_context method."""
+        # Create a K8sClientCache instance
+        cache = K8sClientCache()
+        
+        # Add some items to the cache
+        cache._client_cache['cluster1'] = MagicMock()
+        cache._client_cache['cluster2'] = MagicMock()
+        
+        # Set active context
+        cache.set_active_context('test-context')
+        
+        # Verify context was set
+        assert cache._active_context == 'test-context'
+        
+        # Verify cache was cleared
+        assert len(cache._client_cache) == 0
+
+    def test_get_active_context_when_set(self):
+        """Test get_active_context when context is set."""
+        # Create a K8sClientCache instance
+        cache = K8sClientCache()
+        
+        # Set context
+        cache._active_context = 'test-context'
+        
+        # Get context
+        context = cache.get_active_context()
+        
+        # Verify correct context was returned
+        assert context == 'test-context'
+
+    def test_get_active_context_when_not_set(self):
+        """Test get_active_context when context is not set."""
+        # Create a K8sClientCache instance
+        cache = K8sClientCache()
+        
+        # Ensure context is None
+        cache._active_context = None
+        
+        # Get context
+        context = cache.get_active_context()
+        
+        # Verify None was returned
+        assert context is None
+
+    def test_context_switching_clears_cache(self):
+        """Test that switching contexts clears the client cache."""
+        # Create a K8sClientCache instance
+        cache = K8sClientCache()
+        
+        # Add clients to cache
+        cache._client_cache['cluster1'] = MagicMock()
+        cache._client_cache['cluster2'] = MagicMock()
+        initial_cache_size = len(cache._client_cache)
+        
+        assert initial_cache_size == 2
+        
+        # Switch context
+        cache.set_active_context('new-context')
+        
+        # Verify cache was cleared
+        assert len(cache._client_cache) == 0
+
+    def test_get_cluster_from_context_valid(self):
+        """Test get_cluster_from_context with valid context."""
+        import tempfile
+        import yaml
+        from pathlib import Path
+        
+        # Create a K8sClientCache instance
+        cache = K8sClientCache()
+        
+        # Create temporary kubeconfig
+        with tempfile.TemporaryDirectory() as temp_dir:
+            kubeconfig_path = Path(temp_dir) / 'config'
+            kubeconfig = {
+                'apiVersion': 'v1',
+                'kind': 'Config',
+                'contexts': [
+                    {
+                        'name': 'test-context',
+                        'context': {
+                            'cluster': 'test-cluster',
+                            'user': 'test-user'
+                        }
+                    }
+                ],
+                'clusters': [
+                    {
+                        'name': 'test-cluster',
+                        'cluster': {
+                            'server': 'https://test-server'
+                        }
+                    }
+                ],
+                'users': [
+                    {
+                        'name': 'test-user',
+                        'user': {}
+                    }
+                ]
+            }
+            
+            with open(kubeconfig_path, 'w') as f:
+                yaml.dump(kubeconfig, f)
+            
+            # Set KUBECONFIG env var
+            with patch.dict('os.environ', {'KUBECONFIG': str(kubeconfig_path)}):
+                # Get cluster from context
+                cluster = cache.get_cluster_from_context('test-context')
+                
+                # Verify correct cluster was returned
+                assert cluster == 'test-cluster'
+
+    def test_get_cluster_from_context_invalid(self):
+        """Test get_cluster_from_context with invalid context."""
+        import tempfile
+        import yaml
+        from pathlib import Path
+        
+        # Create a K8sClientCache instance
+        cache = K8sClientCache()
+        
+        # Create temporary kubeconfig
+        with tempfile.TemporaryDirectory() as temp_dir:
+            kubeconfig_path = Path(temp_dir) / 'config'
+            kubeconfig = {
+                'apiVersion': 'v1',
+                'kind': 'Config',
+                'contexts': [
+                    {
+                        'name': 'test-context',
+                        'context': {
+                            'cluster': 'test-cluster',
+                            'user': 'test-user'
+                        }
+                    }
+                ]
+            }
+            
+            with open(kubeconfig_path, 'w') as f:
+                yaml.dump(kubeconfig, f)
+            
+            # Set KUBECONFIG env var
+            with patch.dict('os.environ', {'KUBECONFIG': str(kubeconfig_path)}):
+                # Get cluster from non-existent context
+                cluster = cache.get_cluster_from_context('nonexistent-context')
+                
+                # Verify None was returned
+                assert cluster is None
+
+    def test_get_cluster_from_context_no_kubeconfig(self):
+        """Test get_cluster_from_context when kubeconfig doesn't exist."""
+        import tempfile
+        from pathlib import Path
+        
+        # Create a K8sClientCache instance
+        cache = K8sClientCache()
+        
+        # Set KUBECONFIG to non-existent file
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_path = Path(temp_dir) / 'nonexistent' / 'config'
+            with patch.dict('os.environ', {'KUBECONFIG': str(fake_path)}):
+                # Get cluster from context
+                cluster = cache.get_cluster_from_context('test-context')
+                
+                # Verify None was returned
+                assert cluster is None
+
+    def test_get_cluster_from_context_uses_active_context(self):
+        """Test get_cluster_from_context uses active context when none specified."""
+        import tempfile
+        import yaml
+        from pathlib import Path
+        
+        # Create a K8sClientCache instance
+        cache = K8sClientCache()
+        
+        # Set active context
+        cache._active_context = 'active-context'
+        
+        # Create temporary kubeconfig
+        with tempfile.TemporaryDirectory() as temp_dir:
+            kubeconfig_path = Path(temp_dir) / 'config'
+            kubeconfig = {
+                'apiVersion': 'v1',
+                'kind': 'Config',
+                'contexts': [
+                    {
+                        'name': 'active-context',
+                        'context': {
+                            'cluster': 'active-cluster',
+                            'user': 'test-user'
+                        }
+                    }
+                ]
+            }
+            
+            with open(kubeconfig_path, 'w') as f:
+                yaml.dump(kubeconfig, f)
+            
+            # Set KUBECONFIG env var
+            with patch.dict('os.environ', {'KUBECONFIG': str(kubeconfig_path)}):
+                # Get cluster from context (no context specified)
+                cluster = cache.get_cluster_from_context()
+                
+                # Verify correct cluster was returned
+                assert cluster == 'active-cluster'
+
+    def test_get_cluster_from_context_no_active_context(self):
+        """Test get_cluster_from_context when no active context and none specified."""
+        # Create a K8sClientCache instance
+        cache = K8sClientCache()
+        
+        # Ensure no active context
+        cache._active_context = None
+        
+        # Get cluster from context (no context specified)
+        cluster = cache.get_cluster_from_context()
+        
+        # Verify None was returned
+        assert cluster is None
