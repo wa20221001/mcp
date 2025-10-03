@@ -34,7 +34,7 @@ from awslabs.eks_mcp_server.models import (
 from mcp.server.fastmcp import Context
 from mcp.types import TextContent
 from pydantic import Field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 
 class K8sHandler:
@@ -71,6 +71,26 @@ class K8sHandler:
         self.mcp.tool(name='apply_yaml')(self.apply_yaml)
         self.mcp.tool(name='generate_app_manifest')(self.generate_app_manifest)
 
+    def _resolve_cluster_name(self, ctx: Context, cluster_name: Optional[str]) -> Tuple[str, Optional[str]]:
+        """Resolve the target cluster name, optionally using the active context."""
+        if cluster_name:
+            return cluster_name, None
+
+        resolved_cluster = self.client_cache.get_cluster_from_context()
+        active_context = self.client_cache.get_active_context()
+
+        if resolved_cluster:
+            log_with_request_id(
+                ctx,
+                LogLevel.DEBUG,
+                f'No cluster provided; using cluster {resolved_cluster} from active context {active_context}.',
+            )
+            return resolved_cluster, active_context
+
+        raise ValueError(
+            'Cluster name is required. Provide cluster_name explicitly or set an active Kubernetes context via set_k8s_context.'
+        )
+
     def get_client(self, cluster_name: str) -> K8sApis:
         """Get a Kubernetes client for the specified cluster.
 
@@ -94,9 +114,10 @@ class K8sHandler:
             description="""Absolute path to the YAML file to apply.
             IMPORTANT: Must be an absolute path (e.g., '/home/user/manifests/app.yaml') as the MCP client and server might not run from the same location.""",
         ),
-        cluster_name: str = Field(
-            ...,
-            description='Name of the EKS cluster where the resources will be created or updated.',
+        cluster_name: Optional[str] = Field(
+            None,
+            description='Name of the EKS cluster where the resources will be created or updated. '
+            'If omitted, the currently active Kubernetes context will be used.',
         ),
         namespace: str = Field(
             ...,
@@ -129,7 +150,7 @@ class K8sHandler:
         Args:
             ctx: MCP context
             yaml_path: Absolute path to the YAML file to apply
-            cluster_name: Name of the EKS cluster
+            cluster_name: Name of the EKS cluster. If omitted, the active context will be resolved.
             namespace: Default namespace to use for resources
             force: Whether to update resources if they already exist (like kubectl apply)
 
@@ -147,6 +168,27 @@ class K8sHandler:
                     force_applied=force,
                     resources_created=0,
                     resources_updated=0,
+                )
+
+            # Resolve cluster name, optionally via active context
+            try:
+                cluster_name, resolved_context = self._resolve_cluster_name(ctx, cluster_name)
+            except ValueError as exc:
+                error_msg = str(exc)
+                log_with_request_id(ctx, LogLevel.ERROR, error_msg)
+                return ApplyYamlResponse(
+                    isError=True,
+                    content=[TextContent(type='text', text=error_msg)],
+                    force_applied=force,
+                    resources_created=0,
+                    resources_updated=0,
+                )
+
+            if resolved_context:
+                log_with_request_id(
+                    ctx,
+                    LogLevel.DEBUG,
+                    f"Resolved cluster '{cluster_name}' from active context '{resolved_context}'.",
                 )
 
             # Get Kubernetes client for the cluster
@@ -303,9 +345,10 @@ class K8sHandler:
             - read: Get details of an existing resource
             Use list_k8s_resources for listing multiple resources.""",
         ),
-        cluster_name: str = Field(
-            ...,
-            description='Name of the EKS cluster where the resource is located or will be created.',
+        cluster_name: Optional[str] = Field(
+            None,
+            description='Name of the EKS cluster where the resource is located or will be created. '
+            'If omitted, the active Kubernetes context will be used.',
         ),
         kind: str = Field(
             ...,
@@ -363,7 +406,7 @@ class K8sHandler:
         Args:
             ctx: MCP context
             operation: Operation to perform (create, replace, patch, delete, read)
-            cluster_name: Name of the EKS cluster
+            cluster_name: Name of the EKS cluster. If omitted, the active context will be resolved.
             kind: Kind of the Kubernetes resource (e.g., 'Pod', 'Service')
             api_version: API version of the Kubernetes resource (e.g., 'v1', 'apps/v1')
             name: Name of the Kubernetes resource
@@ -426,6 +469,29 @@ class K8sHandler:
                     api_version=api_version,
                     operation=operation,
                     resource=None,
+                )
+
+            try:
+                cluster_name, resolved_context = self._resolve_cluster_name(ctx, cluster_name)
+            except ValueError as exc:
+                error_msg = str(exc)
+                log_with_request_id(ctx, LogLevel.ERROR, error_msg)
+                return KubernetesResourceResponse(
+                    isError=True,
+                    content=[TextContent(type='text', text=error_msg)],
+                    kind=kind,
+                    name=name or '',
+                    namespace=namespace,
+                    api_version=api_version,
+                    operation=operation,
+                    resource=None,
+                )
+
+            if resolved_context:
+                log_with_request_id(
+                    ctx,
+                    LogLevel.DEBUG,
+                    f"Resolved cluster '{cluster_name}' from active context '{resolved_context}'.",
                 )
 
             # Get Kubernetes client for the cluster
@@ -505,8 +571,10 @@ class K8sHandler:
     async def list_k8s_resources(
         self,
         ctx: Context,
-        cluster_name: str = Field(
-            ..., description='Name of the EKS cluster where the resources are located.'
+        cluster_name: Optional[str] = Field(
+            None,
+            description='Name of the EKS cluster where the resources are located. '
+            'If omitted, the active Kubernetes context will be used.',
         ),
         kind: str = Field(
             ...,
@@ -556,7 +624,7 @@ class K8sHandler:
 
         Args:
             ctx: MCP context
-            cluster_name: Name of the EKS cluster
+            cluster_name: Name of the EKS cluster. If omitted, the active context will be resolved.
             kind: Kind of the Kubernetes resources (e.g., 'Pod', 'Service')
             api_version: API version of the Kubernetes resources (e.g., 'v1', 'apps/v1')
             namespace: Namespace of the Kubernetes resources (optional)
@@ -567,6 +635,28 @@ class K8sHandler:
             KubernetesResourceListResponse with operation result
         """
         try:
+            try:
+                cluster_name, resolved_context = self._resolve_cluster_name(ctx, cluster_name)
+            except ValueError as exc:
+                error_msg = str(exc)
+                log_with_request_id(ctx, LogLevel.ERROR, error_msg)
+                return KubernetesResourceListResponse(
+                    isError=True,
+                    content=[TextContent(type='text', text=error_msg)],
+                    kind=kind,
+                    api_version=api_version,
+                    namespace=namespace,
+                    count=0,
+                    items=[],
+                )
+
+            if resolved_context:
+                log_with_request_id(
+                    ctx,
+                    LogLevel.DEBUG,
+                    f"Resolved cluster '{cluster_name}' from active context '{resolved_context}'.",
+                )
+
             # Get Kubernetes client for the cluster
             k8s_client = self.get_client(cluster_name)
 
@@ -857,8 +947,10 @@ class K8sHandler:
     async def get_pod_logs(
         self,
         ctx: Context,
-        cluster_name: str = Field(
-            ..., description='Name of the EKS cluster where the pod is running.'
+        cluster_name: Optional[str] = Field(
+            None,
+            description='Name of the EKS cluster where the pod is running. '
+            'If omitted, the active Kubernetes context will be used.',
         ),
         namespace: str = Field(..., description='Kubernetes namespace where the pod is located.'),
         pod_name: str = Field(..., description='Name of the pod to retrieve logs from.'),
@@ -902,7 +994,7 @@ class K8sHandler:
 
         Args:
             ctx: MCP context
-            cluster_name: Name of the EKS cluster
+            cluster_name: Name of the EKS cluster. If omitted, the active context will be resolved.
             namespace: Namespace of the pod
             pod_name: Name of the pod
             container_name: Container name (optional, if pod contains more than one container)
@@ -928,6 +1020,27 @@ class K8sHandler:
             )
 
         try:
+            try:
+                cluster_name, resolved_context = self._resolve_cluster_name(ctx, cluster_name)
+            except ValueError as exc:
+                error_msg = str(exc)
+                log_with_request_id(ctx, LogLevel.ERROR, error_msg)
+                return PodLogsResponse(
+                    isError=True,
+                    content=[TextContent(type='text', text=error_msg)],
+                    pod_name=pod_name,
+                    namespace=namespace,
+                    container_name=container_name,
+                    log_lines=[],
+                )
+
+            if resolved_context:
+                log_with_request_id(
+                    ctx,
+                    LogLevel.DEBUG,
+                    f"Resolved cluster '{cluster_name}' from active context '{resolved_context}'.",
+                )
+
             # Get Kubernetes client for the cluster
             k8s_client = self.get_client(cluster_name)
 
@@ -997,8 +1110,10 @@ class K8sHandler:
     async def get_k8s_events(
         self,
         ctx: Context,
-        cluster_name: str = Field(
-            ..., description='Name of the EKS cluster where the resource is located.'
+        cluster_name: Optional[str] = Field(
+            None,
+            description='Name of the EKS cluster where the resource is located. '
+            'If omitted, the active Kubernetes context will be used.',
         ),
         kind: str = Field(
             ...,
@@ -1036,7 +1151,7 @@ class K8sHandler:
 
         Args:
             ctx: MCP context
-            cluster_name: Name of the EKS cluster
+            cluster_name: Name of the EKS cluster. If omitted, the active context will be resolved.
             kind: Kind of the involved object
             name: Name of the involved object
             namespace: Namespace of the involved object (optional for non-namespaced resources)
@@ -1059,6 +1174,28 @@ class K8sHandler:
             )
 
         try:
+            try:
+                cluster_name, resolved_context = self._resolve_cluster_name(ctx, cluster_name)
+            except ValueError as exc:
+                error_msg = str(exc)
+                log_with_request_id(ctx, LogLevel.ERROR, error_msg)
+                return EventsResponse(
+                    isError=True,
+                    content=[TextContent(type='text', text=error_msg)],
+                    involved_object_kind=kind,
+                    involved_object_name=name,
+                    involved_object_namespace=namespace,
+                    count=0,
+                    events=[],
+                )
+
+            if resolved_context:
+                log_with_request_id(
+                    ctx,
+                    LogLevel.DEBUG,
+                    f"Resolved cluster '{cluster_name}' from active context '{resolved_context}'.",
+                )
+
             # Get Kubernetes client for the cluster
             k8s_client = self.get_client(cluster_name)
 
@@ -1134,8 +1271,10 @@ class K8sHandler:
     async def list_api_versions(
         self,
         ctx: Context,
-        cluster_name: str = Field(
-            ..., description='Name of the EKS cluster to query for available API versions.'
+        cluster_name: Optional[str] = Field(
+            None,
+            description='Name of the EKS cluster to query for available API versions. '
+            'If omitted, the active Kubernetes context will be used.',
         ),
     ) -> ApiVersionsResponse:
         """List all available API versions in the Kubernetes cluster.
@@ -1158,12 +1297,32 @@ class K8sHandler:
 
         Args:
             ctx: MCP context
-            cluster_name: Name of the EKS cluster
+            cluster_name: Name of the EKS cluster. If omitted, the active context will be resolved.
 
         Returns:
             ApiVersionsResponse with list of available API versions
         """
         try:
+            try:
+                cluster_name, resolved_context = self._resolve_cluster_name(ctx, cluster_name)
+            except ValueError as exc:
+                error_msg = str(exc)
+                log_with_request_id(ctx, LogLevel.ERROR, error_msg)
+                return ApiVersionsResponse(
+                    isError=True,
+                    content=[TextContent(type='text', text=error_msg)],
+                    cluster_name=cluster_name or '',
+                    api_versions=[],
+                    count=0,
+                )
+
+            if resolved_context:
+                log_with_request_id(
+                    ctx,
+                    LogLevel.DEBUG,
+                    f"Resolved cluster '{cluster_name}' from active context '{resolved_context}'.",
+                )
+
             # Get Kubernetes client for the cluster
             k8s_client = self.get_client(cluster_name)
 

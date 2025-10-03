@@ -14,14 +14,11 @@
 
 """Profile and context management handler for the EKS MCP Server."""
 
-import os
-from configparser import ConfigParser
-from pathlib import Path
 from typing import Dict, List, Optional
 
-import yaml
+import boto3
 from awslabs.eks_mcp_server.aws_helper import AwsHelper
-from awslabs.eks_mcp_server.k8s_client_cache import K8sClientCache
+from awslabs.eks_mcp_server.k8s_client_cache import K8sClientCache, KubeconfigParseError
 from awslabs.eks_mcp_server.logging_helper import LogLevel, log_with_request_id
 from loguru import logger
 from mcp.server.fastmcp import Context
@@ -54,9 +51,12 @@ class ProfileContextHandler:
     async def set_aws_profile(
         self,
         ctx: Context,
-        profile_name: str = Field(
-            ...,
-            description='Name of the AWS profile to set as active. Must exist in ~/.aws/config or ~/.aws/credentials.',
+        profile_name: Optional[str] = Field(
+            None,
+            description=(
+                'Name of the AWS profile to set as active. Provide no value or "default" to clear the active profile '
+                'and use the standard AWS credential search chain.'
+            ),
         ),
     ) -> str:
         """Set the active AWS profile for subsequent operations.
@@ -72,27 +72,44 @@ class ProfileContextHandler:
         Returns:
             Success message with the active profile name
         """
-        log_with_request_id(ctx, LogLevel.INFO, f'Setting AWS profile to: {profile_name}')
+        log_with_request_id(ctx, LogLevel.DEBUG, f'Request to set AWS profile to: {profile_name}')
         
         try:
+            normalized_profile: Optional[str]
+            if profile_name is None or str(profile_name).strip() == '' or str(profile_name).strip().lower() == 'default':
+                AwsHelper.set_active_profile(None)
+                log_with_request_id(
+                    ctx,
+                    LogLevel.DEBUG,
+                    'Cleared active AWS profile; default credential chain in use.',
+                )
+                return (
+                    'AWS profile cleared. Subsequent operations will use the default AWS credential chain '
+                    '(environment variables, container/instance metadata, etc.).'
+                )
+
+            normalized_profile = str(profile_name).strip()
+
             # Validate that the profile exists
             available_profiles = self._get_aws_profiles()
-            if profile_name not in available_profiles:
+            if normalized_profile not in available_profiles:
                 raise ValueError(
-                    f"Profile '{profile_name}' not found. Available profiles: {', '.join(available_profiles)}"
+                    f"Profile '{normalized_profile}' not found. Available profiles: {', '.join(sorted(available_profiles))}"
                 )
-            
+
             # Set the profile
-            AwsHelper.set_active_profile(profile_name)
-            
+            AwsHelper.set_active_profile(normalized_profile)
+
             log_with_request_id(
                 ctx,
-                LogLevel.INFO,
-                f'Successfully set AWS profile to: {profile_name}',
+                LogLevel.DEBUG,
+                f"Successfully set AWS profile to: {normalized_profile}",
             )
-            
-            return f"AWS profile successfully set to '{profile_name}'. All subsequent AWS operations will use this profile."
-            
+
+            return (
+                f"AWS profile successfully set to '{normalized_profile}'. All subsequent AWS operations will use this profile."
+            )
+
         except Exception as e:
             error_msg = f'Failed to set AWS profile: {str(e)}'
             log_with_request_id(ctx, LogLevel.ERROR, error_msg)
@@ -111,7 +128,7 @@ class ProfileContextHandler:
             Name of the current AWS profile or default credential source
         """
         
-        log_with_request_id(ctx, LogLevel.INFO, 'Getting current AWS profile')
+        log_with_request_id(ctx, LogLevel.DEBUG, 'Getting current AWS profile')
         
         try:
             current_profile = AwsHelper.get_active_profile()
@@ -139,14 +156,14 @@ class ProfileContextHandler:
             Dictionary containing list of available AWS profiles
         """
         
-        log_with_request_id(ctx, LogLevel.INFO, 'Listing available AWS profiles')
+        log_with_request_id(ctx, LogLevel.DEBUG, 'Listing available AWS profiles')
         
         try:
             profiles = self._get_aws_profiles()
             
             log_with_request_id(
                 ctx,
-                LogLevel.INFO,
+                LogLevel.DEBUG,
                 f'Found {len(profiles)} AWS profiles',
             )
             
@@ -182,7 +199,7 @@ class ProfileContextHandler:
             Success message with the active context name
         """
         
-        log_with_request_id(ctx, LogLevel.INFO, f'Setting Kubernetes context to: {context_name}')
+        log_with_request_id(ctx, LogLevel.DEBUG, f'Request to set Kubernetes context to: {context_name}')
         
         try:
             # Validate that the context exists
@@ -198,7 +215,7 @@ class ProfileContextHandler:
             
             log_with_request_id(
                 ctx,
-                LogLevel.INFO,
+                LogLevel.DEBUG,
                 f'Successfully set Kubernetes context to: {context_name}',
             )
             
@@ -222,7 +239,7 @@ class ProfileContextHandler:
             Name of the current Kubernetes context
         """
         
-        log_with_request_id(ctx, LogLevel.INFO, 'Getting current Kubernetes context')
+        log_with_request_id(ctx, LogLevel.DEBUG, 'Getting current Kubernetes context')
         
         try:
             client_cache = K8sClientCache()
@@ -251,14 +268,14 @@ class ProfileContextHandler:
             Dictionary containing list of available Kubernetes contexts
         """
         
-        log_with_request_id(ctx, LogLevel.INFO, 'Listing available Kubernetes contexts')
+        log_with_request_id(ctx, LogLevel.DEBUG, 'Listing available Kubernetes contexts')
         
         try:
             contexts = self._get_k8s_contexts()
             
             log_with_request_id(
                 ctx,
-                LogLevel.INFO,
+                LogLevel.DEBUG,
                 f'Found {len(contexts)} Kubernetes contexts',
             )
             
@@ -278,28 +295,10 @@ class ProfileContextHandler:
         Returns:
             List of profile names
         """
-        profiles = set()
-        
-        # Check ~/.aws/config
-        config_path = Path.home() / '.aws' / 'config'
-        if config_path.exists():
-            config = ConfigParser()
-            config.read(config_path)
-            for section in config.sections():
-                # Profile sections are named 'profile <name>' in config file
-                if section.startswith('profile '):
-                    profiles.add(section.replace('profile ', ''))
-                elif section == 'default':
-                    profiles.add('default')
-        
-        # Check ~/.aws/credentials
-        credentials_path = Path.home() / '.aws' / 'credentials'
-        if credentials_path.exists():
-            config = ConfigParser()
-            config.read(credentials_path)
-            for section in config.sections():
-                profiles.add(section)
-        
+        session = boto3.Session()
+        profiles = set(session.available_profiles)
+        # The default profile is always implicitly available even if not declared
+        profiles.add('default')
         return list(profiles)
 
     def _get_k8s_contexts(self) -> List[str]:
@@ -308,25 +307,11 @@ class ProfileContextHandler:
         Returns:
             List of context names
         """
-        kubeconfig_path = os.environ.get('KUBECONFIG', str(Path.home() / '.kube' / 'config'))
-        
-        if not Path(kubeconfig_path).exists():
-            return []
-        
+        client_cache = K8sClientCache()
         try:
-            with open(kubeconfig_path, 'r') as f:
-                kubeconfig = yaml.safe_load(f)
-            
-            if not kubeconfig or 'contexts' not in kubeconfig:
-                return []
-            
-            contexts = []
-            for context in kubeconfig.get('contexts', []):
-                if 'name' in context:
-                    contexts.append(context['name'])
-            
-            return contexts
-            
-        except Exception as e:
-            logger.error(f'Failed to read kubeconfig: {str(e)}')
+            contexts = client_cache.list_contexts()
+        except KubeconfigParseError as exc:
+            logger.error(f'Failed to parse kubeconfig: {exc}')
             return []
+
+        return contexts

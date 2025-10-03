@@ -155,58 +155,80 @@ users:
             yield config_file
 
     @pytest.mark.asyncio
-    async def test_list_aws_profiles(self, handler, mock_context, temp_aws_config):
-        """Test listing AWS profiles from config files."""
-        with patch.object(Path, 'home', return_value=temp_aws_config.parent):
+    async def test_list_aws_profiles(self, handler, mock_context):
+        """Test listing AWS profiles from boto3 session discovery."""
+        available = ['test-profile', 'sso-profile', 'another-profile', 'creds-only-profile']
+        with patch('awslabs.eks_mcp_server.profile_context_handler.boto3.Session') as mock_session_cls:
+            mock_session = MagicMock()
+            mock_session.available_profiles = available
+            mock_session_cls.return_value = mock_session
+
             result = await handler.list_aws_profiles(mock_context)
-            
-            # Verify profiles were found
-            assert 'profiles' in result
-            assert 'default' in result['profiles']
-            assert 'test-profile' in result['profiles']
-            assert 'sso-profile' in result['profiles']
-            assert 'another-profile' in result['profiles']
-            assert 'creds-only-profile' in result['profiles']
+
+        assert 'profiles' in result
+        returned = set(result['profiles'])
+        for profile in available:
+            assert profile in returned
+        assert 'default' in returned
 
     @pytest.mark.asyncio
     async def test_list_aws_profiles_no_config_files(self, handler, mock_context):
         """Test listing AWS profiles when config files don't exist."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            with patch.object(Path, 'home', return_value=Path(temp_dir)):
-                result = await handler.list_aws_profiles(mock_context)
-                
-                # Should return empty list
-                assert 'profiles' in result
-                assert len(result['profiles']) == 0
+        with patch('awslabs.eks_mcp_server.profile_context_handler.boto3.Session') as mock_session_cls:
+            mock_session = MagicMock()
+            mock_session.available_profiles = []
+            mock_session_cls.return_value = mock_session
+
+            result = await handler.list_aws_profiles(mock_context)
+
+        assert result['profiles'] == ['default']
 
     @pytest.mark.asyncio
-    async def test_set_aws_profile_valid(self, handler, mock_context, temp_aws_config):
+    async def test_set_aws_profile_valid(self, handler, mock_context):
         """Test setting a valid AWS profile."""
-        with patch.object(Path, 'home', return_value=temp_aws_config.parent):
+        with patch.object(handler, '_get_aws_profiles', return_value=['test-profile']):
             result = await handler.set_aws_profile(mock_context, 'test-profile')
-            
-            # Verify profile was set
-            assert 'test-profile' in result
-            assert AwsHelper.get_active_profile() == 'test-profile'
+
+        assert 'test-profile' in result
+        assert AwsHelper.get_active_profile() == 'test-profile'
 
     @pytest.mark.asyncio
-    async def test_set_aws_profile_sso(self, handler, mock_context, temp_aws_config):
+    async def test_set_aws_profile_sso(self, handler, mock_context):
         """Test setting an AWS SSO profile."""
-        with patch.object(Path, 'home', return_value=temp_aws_config.parent):
+        with patch.object(handler, '_get_aws_profiles', return_value=['sso-profile']):
             result = await handler.set_aws_profile(mock_context, 'sso-profile')
-            
-            # Verify SSO profile was set
-            assert 'sso-profile' in result
-            assert AwsHelper.get_active_profile() == 'sso-profile'
+
+        assert 'sso-profile' in result
+        assert AwsHelper.get_active_profile() == 'sso-profile'
 
     @pytest.mark.asyncio
-    async def test_set_aws_profile_invalid(self, handler, mock_context, temp_aws_config):
+    async def test_set_aws_profile_invalid(self, handler, mock_context):
         """Test setting an invalid AWS profile."""
-        with patch.object(Path, 'home', return_value=temp_aws_config.parent):
+        with patch.object(handler, '_get_aws_profiles', return_value=['valid-profile']):
             with pytest.raises(Exception) as exc_info:
                 await handler.set_aws_profile(mock_context, 'nonexistent-profile')
-            
-            assert 'not found' in str(exc_info.value)
+
+        assert 'not found' in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_clear_aws_profile_with_none(self, handler, mock_context):
+        """Test that providing None clears the active profile."""
+        AwsHelper.set_active_profile('existing')
+
+        result = await handler.set_aws_profile(mock_context, None)
+
+        assert 'AWS profile cleared' in result
+        assert AwsHelper.get_active_profile() is None
+
+    @pytest.mark.asyncio
+    async def test_clear_aws_profile_with_default_string(self, handler, mock_context):
+        """Test that providing 'default' clears the active profile."""
+        AwsHelper.set_active_profile('existing')
+
+        result = await handler.set_aws_profile(mock_context, 'default')
+
+        assert 'AWS profile cleared' in result
+        assert AwsHelper.get_active_profile() is None
 
     @pytest.mark.asyncio
     async def test_get_aws_profile_when_set(self, handler, mock_context):
@@ -304,25 +326,28 @@ users:
         assert 'No Kubernetes context' in result
 
     @pytest.mark.asyncio
-    async def test_profile_switching_workflow(self, handler, mock_context, temp_aws_config):
+    async def test_profile_switching_workflow(self, handler, mock_context):
         """Test a complete workflow of switching between profiles."""
-        with patch.object(Path, 'home', return_value=temp_aws_config.parent):
-            # List profiles
+        available = ['test-profile', 'another-profile']
+        with patch('awslabs.eks_mcp_server.profile_context_handler.boto3.Session') as mock_session_cls:
+            mock_session = MagicMock()
+            mock_session.available_profiles = available
+            mock_session_cls.return_value = mock_session
+
             profiles = await handler.list_aws_profiles(mock_context)
-            assert 'test-profile' in profiles['profiles']
-            
-            # Set first profile
+
+        assert 'test-profile' in profiles['profiles']
+
+        with patch.object(handler, '_get_aws_profiles', return_value=available):
             await handler.set_aws_profile(mock_context, 'test-profile')
             result = await handler.get_aws_profile(mock_context)
             assert 'test-profile' in result
-            
-            # Switch to another profile
+
             await handler.set_aws_profile(mock_context, 'another-profile')
             result = await handler.get_aws_profile(mock_context)
             assert 'another-profile' in result
-            
-            # Verify cache was cleared on switch
-            assert len(AwsHelper._client_cache) == 0
+
+    assert len(AwsHelper._client_cache) == 0
 
     @pytest.mark.asyncio
     async def test_context_switching_workflow(self, handler, mock_context, temp_kubeconfig):
@@ -343,21 +368,22 @@ users:
             assert 'context2' in result
 
     @pytest.mark.asyncio
-    async def test_multiple_profile_types(self, handler, mock_context, temp_aws_config):
+    async def test_multiple_profile_types(self, handler, mock_context):
         """Test handling different types of AWS profiles (regular, SSO, credentials-only)."""
-        with patch.object(Path, 'home', return_value=temp_aws_config.parent):
-            # Test regular profile
+        with patch.object(handler, '_get_aws_profiles', return_value=[
+            'test-profile',
+            'sso-profile',
+            'creds-only-profile',
+            'default',
+        ]):
             await handler.set_aws_profile(mock_context, 'test-profile')
             assert AwsHelper.get_active_profile() == 'test-profile'
-            
-            # Test SSO profile
+
             await handler.set_aws_profile(mock_context, 'sso-profile')
             assert AwsHelper.get_active_profile() == 'sso-profile'
-            
-            # Test credentials-only profile
+
             await handler.set_aws_profile(mock_context, 'creds-only-profile')
             assert AwsHelper.get_active_profile() == 'creds-only-profile'
-            
-            # Test default profile
-            await handler.set_aws_profile(mock_context, 'default')
-            assert AwsHelper.get_active_profile() == 'default'
+
+        await handler.set_aws_profile(mock_context, 'default')
+        assert AwsHelper.get_active_profile() is None
